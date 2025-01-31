@@ -4,17 +4,43 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [3.8.0] - 2025-01-30
+
+### Added
+- Support DeepSeek-R1 Qwen models ([#3431](https://github.com/nomic-ai/gpt4all/pull/3431))
+- Support for think tags in the GUI ([#3440](https://github.com/nomic-ai/gpt4all/pull/3440))
+- Support specifying SHA256 hash in models3.json instead of MD5 ([#3437](https://github.com/nomic-ai/gpt4all/pull/3437))
+
+### Changed
+- Use minja instead of Jinja2Cpp for significantly improved template compatibility ([#3433](https://github.com/nomic-ai/gpt4all/pull/3433))
+
+### Fixed
+- Fix regression while using localdocs with server API ([#3410](https://github.com/nomic-ai/gpt4all/pull/3410))
+- Don't show system messages in server chat view ([#3411](https://github.com/nomic-ai/gpt4all/pull/3411))
+- Fix `codesign --verify` failure on macOS ([#3413](https://github.com/nomic-ai/gpt4all/pull/3413))
+- Code Interpreter: Fix console.log not accepting a single string after v3.7.0 ([#3426](https://github.com/nomic-ai/gpt4all/pull/3426))
+- Fix Phi 3.1 Mini 128K Instruct template (by [@ThiloteE](https://github.com/ThiloteE) in [#3412](https://github.com/nomic-ai/gpt4all/pull/3412))
+- Don't block the gui thread for reasoning ([#3435](https://github.com/nomic-ai/gpt4all/pull/3435))
+- Fix corruption of unicode in output of reasoning models ([#3443](https://github.com/nomic-ai/gpt4all/pull/3443))
+
+## [3.7.0] - 2025-01-21
+
+### Added
+- Add support for the Windows ARM64 target platform (CPU-only) ([#3385](https://github.com/nomic-ai/gpt4all/pull/3385))
+
+### Changed
+- Update from Qt 6.5.1 to 6.8.1 ([#3386](https://github.com/nomic-ai/gpt4all/pull/3386))
 
 ### Fixed
 - Fix the timeout error in code interpreter ([#3369](https://github.com/nomic-ai/gpt4all/pull/3369))
 - Fix code interpreter console.log not accepting multiple arguments ([#3371](https://github.com/nomic-ai/gpt4all/pull/3371))
-- Remove 'X is defined' checks from templates as they work incorrectly with Jinja2Cpp ([#3372](https://github.com/nomic-ai/gpt4all/pull/3372))
+- Remove 'X is defined' checks from templates for better compatibility ([#3372](https://github.com/nomic-ai/gpt4all/pull/3372))
 - Jinja2Cpp: Add 'if' requirement for 'else' parsing to fix crash ([#3373](https://github.com/nomic-ai/gpt4all/pull/3373))
 - Save chats on quit, even if the window isn't closed first ([#3387](https://github.com/nomic-ai/gpt4all/pull/3387))
 - Add chat template replacements for five new models and fix EM German Mistral ([#3393](https://github.com/nomic-ai/gpt4all/pull/3393))
 - Fix crash when entering `{{ a["foo"(` as chat template ([#3394](https://github.com/nomic-ai/gpt4all/pull/3394))
-- Sign the maintenance tool on macOS to prevent crash on Sonoma ([#3391](https://github.com/nomic-ai/gpt4all/pull/3391))
+- Sign the maintenance tool on macOS to prevent crash on Sequoia ([#3391](https://github.com/nomic-ai/gpt4all/pull/3391))
+- Jinja2Cpp: Fix operator precedence in 'not X is defined' ([#3402](https://github.com/nomic-ai/gpt4all/pull/3402))
 
 ## [3.6.1] - 2024-12-20
 
@@ -257,6 +283,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Fix several Vulkan resource management issues ([#2694](https://github.com/nomic-ai/gpt4all/pull/2694))
 - Fix crash/hang when some models stop generating, by showing special tokens ([#2701](https://github.com/nomic-ai/gpt4all/pull/2701))
 
+[3.8.0]: https://github.com/nomic-ai/gpt4all/compare/v3.7.0...v3.8.0
+[3.7.0]: https://github.com/nomic-ai/gpt4all/compare/v3.6.1...v3.7.0
 [3.6.1]: https://github.com/nomic-ai/gpt4all/compare/v3.6.0...v3.6.1
 [3.6.0]: https://github.com/nomic-ai/gpt4all/compare/v3.5.3...v3.6.0
 [3.5.3]: https://github.com/nomic-ai/gpt4all/compare/v3.5.2...v3.5.3

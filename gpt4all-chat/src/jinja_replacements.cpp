@@ -5,26 +5,9 @@
 // This is a list of prompt templates known to GPT4All and their associated replacements which are automatically used
 // instead when loading the chat template from GGUF. These exist for two primary reasons:
 // - HuggingFace model authors make ugly chat templates because they do not expect the end user to see them;
-// - and our Jinja2Cpp-based template parsing is not fully compatible with HuggingFace transformers and jinja2.
-
-// Below is a list of known incompatibilities with the official HF jinja2 implementation. These are not all necessarily
-// reflected in the below substitution list, and this cannot be an exhaustive list because there are a plethora of edge
-// cases in template parsing in which jinja2 and Jinja2Cpp differ. These are differences that could be reasonably
-// expected to affect chat templates that could be seen in the wild, or that cause a crash:
-// - Jinja2Cpp crashes (in debug builds) if given the template `a[""(`
-// - Jinja2Cpp does not support these jinja2 constructs:
-//   - `is not none`
-//   - list slicing, e.g. `messages[1:]`
-//   - the jinja2.ext.loopcontrols extension, which HF enables by default
-//   - a missing space after a quote in substitution (e.g. `{{ 'foo'}}`), which *has* been seen in the wild
-// - GPT4All does not currently support these HuggingFace template features:
-//   - customized "tojson" filter (we provide the built-in Jinja2Cpp one)
-//   - the AssistantTracker extension
-
+// - and chat templates occasionally use features we do not support. This is less true now that we use minja.
 
 // The substitution list.
-// For templates that apply to models listed in models3.json, these should be copied there as well for best
-// compatibility with older versions of GPT4All.
 
 const std::unordered_map<std::string_view, std::string_view> CHAT_TEMPLATE_SUBSTITUTIONS {
     // calme-2.1-phi3.5-4b.Q6_K.gguf (reported by ThilotE on Discord), Phi-3.5-mini-instruct-Q4_0.gguf (nomic-ai/gpt4all#3345)
@@ -52,6 +35,30 @@ const std::unordered_map<std::string_view, std::string_view> CHAT_TEMPLATE_SUBST
     {{- '<|assistant|>\n' }}
 {%- else %}
     {{- eos_token }}
+{%- endif %})TEMPLATE",
+    },
+    // DeepSeek-R1-Distill-Qwen-7B-Q4_0.gguf
+    {
+        // original
+        R"TEMPLATE({% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% set ns = namespace(is_first=false, is_tool=false, is_output_first=true, system_prompt='') %}{%- for message in messages %}{%- if message['role'] == 'system' %}{% set ns.system_prompt = message['content'] %}{%- endif %}{%- endfor %}{{bos_token}}{{ns.system_prompt}}{%- for message in messages %}{%- if message['role'] == 'user' %}{%- set ns.is_tool = false -%}{{'<｜User｜>' + message['content']}}{%- endif %}{%- if message['role'] == 'assistant' and message['content'] is none %}{%- set ns.is_tool = false -%}{%- for tool in message['tool_calls']%}{%- if not ns.is_first %}{{'<｜Assistant｜><｜tool▁calls▁begin｜><｜tool▁call▁begin｜>' + tool['type'] + '<｜tool▁sep｜>' + tool['function']['name'] + '\n' + '```json' + '\n' + tool['function']['arguments'] + '\n' + '```' + '<｜tool▁call▁end｜>'}}{%- set ns.is_first = true -%}{%- else %}{{'\n' + '<｜tool▁call▁begin｜>' + tool['type'] + '<｜tool▁sep｜>' + tool['function']['name'] + '\n' + '```json' + '\n' + tool['function']['arguments'] + '\n' + '```' + '<｜tool▁call▁end｜>'}}{{'<｜tool▁calls▁end｜><｜end▁of▁sentence｜>'}}{%- endif %}{%- endfor %}{%- endif %}{%- if message['role'] == 'assistant' and message['content'] is not none %}{%- if ns.is_tool %}{{'<｜tool▁outputs▁end｜>' + message['content'] + '<｜end▁of▁sentence｜>'}}{%- set ns.is_tool = false -%}{%- else %}{% set content = message['content'] %}{% if '</think>' in content %}{% set content = content.split('</think>')[-1] %}{% endif %}{{'<｜Assistant｜>' + content + '<｜end▁of▁sentence｜>'}}{%- endif %}{%- endif %}{%- if message['role'] == 'tool' %}{%- set ns.is_tool = true -%}{%- if ns.is_output_first %}{{'<｜tool▁outputs▁begin｜><｜tool▁output▁begin｜>' + message['content'] + '<｜tool▁output▁end｜>'}}{%- set ns.is_output_first = false %}{%- else %}{{'\n<｜tool▁output▁begin｜>' + message['content'] + '<｜tool▁output▁end｜>'}}{%- endif %}{%- endif %}{%- endfor -%}{% if ns.is_tool %}{{'<｜tool▁outputs▁end｜>'}}{% endif %}{% if add_generation_prompt and not ns.is_tool %}{{'<｜Assistant｜>'}}{% endif %})TEMPLATE",
+        // replacement
+        R"TEMPLATE({%- if not add_generation_prompt is defined %}
+    {%- set add_generation_prompt = false %}
+{%- endif %}
+{%- if messages[0]['role'] == 'system' %}
+    {{- messages[0]['content'] }}
+{%- endif %}
+{%- for message in messages %}
+    {%- if message['role'] == 'user' %}
+        {{- '<｜User｜>' + message['content'] }}
+    {%- endif %}
+    {%- if message['role'] == 'assistant' %}
+        {%- set content = message['content'] | regex_replace('^[\\s\\S]*</think>', '') %}
+        {{- '<｜Assistant｜>' + content + '<｜end▁of▁sentence｜>' }}
+    {%- endif %}
+{%- endfor -%}
+{%- if add_generation_prompt %}
+    {{- '<｜Assistant｜>' }}
 {%- endif %})TEMPLATE",
     },
     // gemma-2-9b-it-Q4_0.gguf (nomic-ai/gpt4all#3282)
@@ -626,7 +633,7 @@ const std::unordered_map<std::string_view, std::string_view> CHAT_TEMPLATE_SUBST
         // replacement
         R"TEMPLATE({%- for message in messages %}
     {%- if message['role'] == 'system' %}
-        {{-'<|system|>\n' + message['content'] + '<|end|>\n'}}
+        {{- '<|system|>\n' + message['content'] + '<|end|>\n' }}
     {%- elif message['role'] == 'user' %}
         {{- '<|user|>\n' + message['content'] + '<|end|>\n' }}
     {%- elif message['role'] == 'assistant' %}
