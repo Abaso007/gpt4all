@@ -110,6 +110,7 @@ GridLayout {
                         case Chat.PromptProcessing: return qsTr("processing ...")
                         case Chat.ResponseGeneration: return qsTr("generating response ...");
                         case Chat.GeneratingQuestions: return qsTr("generating questions ...");
+                        case Chat.ToolCallGeneration: return qsTr("generating toolcall ...");
                         default: return ""; // handle unexpected values
                         }
                     }
@@ -186,6 +187,18 @@ GridLayout {
                         textContent: modelData.content
                         isCurrent: modelData.isCurrentResponse
                         isError: modelData.isToolCallError
+                    }
+                }
+                DelegateChoice {
+                    roleValue: "Think: ";
+                    ChatCollapsibleItem {
+                        Layout.fillWidth: true
+                        textContent: modelData.content
+                        isCurrent: modelData.isCurrentResponse
+                        isError: false
+                        isThinking: true
+                        thinkingTime: modelData.thinkingTime
+                        visible: modelData.content !== ""
                     }
                 }
             }

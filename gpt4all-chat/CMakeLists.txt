@@ -3,12 +3,16 @@ cmake_minimum_required(VERSION 3.25)  # for try_compile SOURCE_FROM_VAR
 include(../common/common.cmake)
 
 set(APP_VERSION_MAJOR 3)
-set(APP_VERSION_MINOR 6)
-set(APP_VERSION_PATCH 2)
+set(APP_VERSION_MINOR 9)
+set(APP_VERSION_PATCH 1)
 set(APP_VERSION_BASE "${APP_VERSION_MAJOR}.${APP_VERSION_MINOR}.${APP_VERSION_PATCH}")
 set(APP_VERSION "${APP_VERSION_BASE}-dev0")
 
 project(gpt4all VERSION ${APP_VERSION_BASE} LANGUAGES CXX C)
+
+if (CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+  set(CMAKE_INSTALL_PREFIX ${CMAKE_BINARY_DIR}/install CACHE PATH "..." FORCE)
+endif()
 
 if(APPLE)
   option(BUILD_UNIVERSAL "Build a Universal binary on macOS" OFF)
@@ -29,6 +33,10 @@ option(GPT4ALL_LOCALHOST "Build installer for localhost repo" OFF)
 option(GPT4ALL_OFFLINE_INSTALLER "Build an offline installer" OFF)
 option(GPT4ALL_SIGN_INSTALL "Sign installed binaries and installers (requires signing identities)" OFF)
 option(GPT4ALL_GEN_CPACK_CONFIG "Generate the CPack config.xml in the package step and nothing else." OFF)
+set(GPT4ALL_USE_QTPDF "AUTO" CACHE STRING "Whether to Use QtPDF for LocalDocs. If OFF or not available on this platform, PDFium is used.")
+set_property(CACHE GPT4ALL_USE_QTPDF PROPERTY STRINGS AUTO ON OFF)
+set(GPT4ALL_FORCE_D3D12 "AUTO" CACHE STRING "Whether to use Direct3D 12 as the Qt scene graph backend. Defaults to ON on Windows ARM.")
+set_property(CACHE GPT4ALL_FORCE_D3D12 PROPERTY STRINGS AUTO ON OFF)
 
 include(cmake/cpack_config.cmake)
 
@@ -45,7 +53,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if (MSVC)
-    # Enable accurate __cplusplus macro to fix errors in Jinja2Cpp
+    # Enable accurate __cplusplus macro
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>)
 endif()
 
@@ -84,14 +92,19 @@ include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-# Generate a header file with the version number
-configure_file(
-  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/config.h.in"
-  "${CMAKE_CURRENT_BINARY_DIR}/config.h"
-)
-
 set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL ON)
-find_package(Qt6 6.5 COMPONENTS Core HttpServer LinguistTools Pdf Quick QuickDialogs2 Sql Svg REQUIRED)
+set(GPT4ALL_QT_COMPONENTS Core HttpServer LinguistTools Quick QuickDialogs2 Sql Svg)
+set(GPT4ALL_USING_QTPDF OFF)
+if (CMAKE_SYSTEM_NAME MATCHES Windows AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|AARCH64|arm64|ARM64)$")
+    # QtPDF is not available.
+    if (GPT4ALL_USE_QTPDF STREQUAL "ON")
+        message(FATAL_ERROR "QtPDF is not available on Windows ARM64.")
+    endif()
+elseif (GPT4ALL_USE_QTPDF MATCHES "^(ON|AUTO)$")
+    set(GPT4ALL_USING_QTPDF ON)
+    list(APPEND GPT4ALL_QT_COMPONENTS Pdf)
+endif()
+find_package(Qt6 6.5 COMPONENTS ${GPT4ALL_QT_COMPONENTS} REQUIRED)
 
 if (QT_KNOWN_POLICY_QTP0004)
     qt_policy(SET QTP0004 NEW)  # generate extra qmldir files on Qt 6.8+
@@ -113,9 +126,23 @@ message(STATUS "Qt 6 root directory: ${Qt6_ROOT_DIR}")
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-if (CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-  set(CMAKE_INSTALL_PREFIX ${CMAKE_BINARY_DIR}/install CACHE PATH "..." FORCE)
+set(GPT4ALL_CONFIG_FORCE_D3D12 -1)
+if (NOT CMAKE_SYSTEM_NAME MATCHES Windows OR Qt6_VERSION VERSION_LESS "6.6")
+    # Direct3D 12 is not available.
+    if (GPT4ALL_FORCE_D3D12 STREQUAL "ON")
+        message(FATAL_ERROR "Cannot use Direct3D 12 on this platform.")
+    endif()
+elseif (GPT4ALL_FORCE_D3D12 MATCHES "^(ON|AUTO)$")
+    if (GPT4ALL_FORCE_D3D12 STREQUAL "ON" OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|AARCH64|arm64|ARM64)$")
+        set(GPT4ALL_CONFIG_FORCE_D3D12 1)
+    endif()
 endif()
+
+# Generate a header file for configuration
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/config.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/config.h"
+)
 
 add_subdirectory(deps)
 add_subdirectory(../gpt4all-backend llmodel)
@@ -415,9 +442,19 @@ target_include_directories(chat PRIVATE deps/usearch/include
                                         deps/usearch/fp16/include)
 
 target_link_libraries(chat
-    PRIVATE Qt6::Core Qt6::HttpServer Qt6::Pdf Qt6::Quick Qt6::Sql Qt6::Svg)
+    PRIVATE Qt6::Core Qt6::HttpServer Qt6::Quick Qt6::Sql Qt6::Svg)
+if (GPT4ALL_USING_QTPDF)
+    target_compile_definitions(chat PRIVATE GPT4ALL_USE_QTPDF)
+    target_link_libraries(chat PRIVATE Qt6::Pdf)
+else()
+    # Link PDFium
+    target_link_libraries(chat PRIVATE pdfium)
+endif()
 target_link_libraries(chat
-    PRIVATE llmodel SingleApplication fmt::fmt duckx::duckx QXlsx jinja2cpp)
+    PRIVATE llmodel SingleApplication fmt::fmt duckx::duckx QXlsx)
+target_include_directories(chat PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/json/include)
+target_include_directories(chat PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/json/include/nlohmann)
+target_include_directories(chat PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minja/include)
 
 if (APPLE)
     target_link_libraries(chat PRIVATE ${COCOA_LIBRARY})
@@ -425,12 +462,18 @@ endif()
 
 # -- install --
 
+if (APPLE)
+    set(GPT4ALL_LIB_DEST bin/gpt4all.app/Contents/Frameworks)
+else()
+    set(GPT4ALL_LIB_DEST lib)
+endif()
+
 install(TARGETS chat DESTINATION bin COMPONENT ${COMPONENT_NAME_MAIN})
 
 install(
     TARGETS llmodel
-    LIBRARY DESTINATION lib COMPONENT ${COMPONENT_NAME_MAIN}  # .so/.dylib
-    RUNTIME DESTINATION bin COMPONENT ${COMPONENT_NAME_MAIN}  # .dll
+    LIBRARY DESTINATION ${GPT4ALL_LIB_DEST} COMPONENT ${COMPONENT_NAME_MAIN}  # .so/.dylib
+    RUNTIME DESTINATION bin                 COMPONENT ${COMPONENT_NAME_MAIN}  # .dll
 )
 
 # We should probably iterate through the list of the cmake for backend, but these need to be installed
@@ -453,8 +496,8 @@ endif()
 
 install(
     TARGETS ${MODEL_IMPL_TARGETS}
-    LIBRARY DESTINATION lib COMPONENT ${COMPONENT_NAME_MAIN}  # .so/.dylib
-    RUNTIME DESTINATION lib COMPONENT ${COMPONENT_NAME_MAIN}  # .dll
+    LIBRARY DESTINATION ${GPT4ALL_LIB_DEST} COMPONENT ${COMPONENT_NAME_MAIN}  # .so/.dylib
+    RUNTIME DESTINATION lib                 COMPONENT ${COMPONENT_NAME_MAIN}  # .dll
 )
 
 if(APPLE AND GPT4ALL_SIGN_INSTALL)
@@ -483,7 +526,7 @@ if (LLMODEL_CUDA)
         TARGETS llamamodel-mainline-cuda
                 llamamodel-mainline-cuda-avxonly
         RUNTIME_DEPENDENCY_SET llama-cuda-deps
-        LIBRARY DESTINATION lib COMPONENT ${COMPONENT_NAME_MAIN}  # .so/.dylib
+        LIBRARY DESTINATION lib COMPONENT ${COMPONENT_NAME_MAIN}  # .so
         RUNTIME DESTINATION lib COMPONENT ${COMPONENT_NAME_MAIN}  # .dll
     )
     if (WIN32)
@@ -494,6 +537,15 @@ if (LLMODEL_CUDA)
             DIRECTORIES "${CUDAToolkit_BIN_DIR}"
             DESTINATION lib COMPONENT ${COMPONENT_NAME_MAIN}
         )
+    endif()
+endif()
+
+if (NOT GPT4ALL_USING_QTPDF)
+    # Install PDFium
+    if (WIN32)
+        install(FILES ${PDFium_LIBRARY} DESTINATION bin                 COMPONENT ${COMPONENT_NAME_MAIN})  # .dll
+    else()
+        install(FILES ${PDFium_LIBRARY} DESTINATION ${GPT4ALL_LIB_DEST} COMPONENT ${COMPONENT_NAME_MAIN})  # .so/.dylib
     endif()
 endif()
 
@@ -547,15 +599,19 @@ endif()
 
 if (GPT4ALL_LOCALHOST)
     cpack_ifw_add_repository("GPT4AllRepository" URL "http://localhost/repository")
-elseif(GPT4ALL_OFFLINE_INSTALLER)
-  add_compile_definitions(GPT4ALL_OFFLINE_INSTALLER)
+elseif (GPT4ALL_OFFLINE_INSTALLER)
+    add_compile_definitions(GPT4ALL_OFFLINE_INSTALLER)
 else()
-  if(${CMAKE_SYSTEM_NAME} MATCHES Linux)
-      cpack_ifw_add_repository("GPT4AllRepository" URL "https://gpt4all.io/installer_repos/linux/repository")
-  elseif(${CMAKE_SYSTEM_NAME} MATCHES Windows)
-      #To sign the target on windows have to create a batch script add use it as a custom target and then use CPACK_IFW_EXTRA_TARGETS to set this extra target
-      cpack_ifw_add_repository("GPT4AllRepository" URL "https://gpt4all.io/installer_repos/windows/repository")
-  elseif(${CMAKE_SYSTEM_NAME} MATCHES Darwin)
-      cpack_ifw_add_repository("GPT4AllRepository" URL "https://gpt4all.io/installer_repos/mac/repository")
-  endif()
+    if (CMAKE_SYSTEM_NAME MATCHES Linux)
+        cpack_ifw_add_repository("GPT4AllRepository" URL "https://gpt4all.io/installer_repos/linux/repository")
+    elseif (CMAKE_SYSTEM_NAME MATCHES Windows)
+        # To sign the target on windows have to create a batch script add use it as a custom target and then use CPACK_IFW_EXTRA_TARGETS to set this extra target
+        if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+            cpack_ifw_add_repository("GPT4AllRepository" URL "https://gpt4all.io/installer_repos/windows/repository")
+        elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|AARCH64|arm64|ARM64)$")
+            cpack_ifw_add_repository("GPT4AllRepository" URL "https://gpt4all.io/installer_repos/windows_arm/repository")
+        endif()
+    elseif (CMAKE_SYSTEM_NAME MATCHES Darwin)
+        cpack_ifw_add_repository("GPT4AllRepository" URL "https://gpt4all.io/installer_repos/mac/repository")
+    endif()
 endif()

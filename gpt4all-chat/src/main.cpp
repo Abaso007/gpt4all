@@ -25,6 +25,14 @@
 #include <QVariant>
 #include <Qt>
 
+#if G4A_CONFIG(force_d3d12)
+#   include <QSGRendererInterface>
+#endif
+
+#ifndef GPT4ALL_USE_QTPDF
+#   include <fpdfview.h>
+#endif
+
 #ifdef Q_OS_LINUX
 #   include <QIcon>
 #endif
@@ -58,6 +66,10 @@ static void raiseWindow(QWindow *window)
 
 int main(int argc, char *argv[])
 {
+#ifndef GPT4ALL_USE_QTPDF
+    FPDF_InitLibrary();
+#endif
+
     QCoreApplication::setOrganizationName("nomic.ai");
     QCoreApplication::setOrganizationDomain("gpt4all.io");
     QCoreApplication::setApplicationName("GPT4All");
@@ -75,24 +87,27 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+#if G4A_CONFIG(force_d3d12)
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D12);
+#endif
+
 #ifdef Q_OS_LINUX
     app.setWindowIcon(QIcon(":/gpt4all/icons/gpt4all.svg"));
 #endif
 
     // set search path before constructing the MySettings instance, which relies on this
-    QString llmodelSearchPaths = QCoreApplication::applicationDirPath();
-    const QString libDir = QCoreApplication::applicationDirPath() + "/../lib/";
-    if (LLM::directoryExists(libDir))
-        llmodelSearchPaths += ";" + libDir;
-#if defined(Q_OS_MAC)
-    const QString binDir = QCoreApplication::applicationDirPath() + "/../../../";
-    if (LLM::directoryExists(binDir))
-        llmodelSearchPaths += ";" + binDir;
-    const QString frameworksDir = QCoreApplication::applicationDirPath() + "/../Frameworks/";
-    if (LLM::directoryExists(frameworksDir))
-        llmodelSearchPaths += ";" + frameworksDir;
+    {
+        auto appDirPath = QCoreApplication::applicationDirPath();
+        QStringList searchPaths {
+#ifdef Q_OS_DARWIN
+            u"%1/../Frameworks"_s.arg(appDirPath),
+#else
+            appDirPath,
+            u"%1/../lib"_s.arg(appDirPath),
 #endif
-    LLModel::Implementation::setImplementationsSearchPath(llmodelSearchPaths.toStdString());
+        };
+        LLModel::Implementation::setImplementationsSearchPath(searchPaths.join(u';').toStdString());
+    }
 
     // Set the local and language translation before the qml engine has even been started. This will
     // use the default system locale unless the user has explicitly set it to use a different one.
@@ -165,6 +180,10 @@ int main(int argc, char *argv[])
     // Make sure ChatLLM threads are joined before global destructors run.
     // Otherwise, we can get a heap-use-after-free inside of llama.cpp.
     ChatListModel::globalInstance()->destroyChats();
+
+#ifndef GPT4ALL_USE_QTPDF
+    FPDF_DestroyLibrary();
+#endif
 
     return res;
 }

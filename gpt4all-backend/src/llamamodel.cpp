@@ -53,6 +53,8 @@ static const std::vector<const char *> KNOWN_ARCHES {
     "gpt2",
     // "gptj", -- no inference code
     "gptneox",
+    "granite",
+    "granitemoe",
     "mpt",
     "baichuan",
     "starcoder",
@@ -80,6 +82,7 @@ static const std::vector<const char *> KNOWN_ARCHES {
     "command-r",
     // "dbrx", -- 16x12B parameters
     "olmo",
+    "olmoe",
     "openelm",
     // "arctic", -- 10B+128x3.66B parameters
     "deepseek2",

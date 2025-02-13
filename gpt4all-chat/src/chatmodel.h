@@ -94,11 +94,28 @@ class MessageItem
 public:
     enum class Type { System, Prompt, Response, ToolResponse };
 
-    MessageItem(Type type, QString content)
-        : m_type(type), m_content(std::move(content)) {}
+    struct system_tag_t { explicit system_tag_t() = default; };
+    static inline constexpr system_tag_t system_tag = system_tag_t{};
 
-    MessageItem(Type type, QString content, const QList<ResultInfo> &sources, const QList<PromptAttachment> &promptAttachments)
-        : m_type(type), m_content(std::move(content)), m_sources(sources), m_promptAttachments(promptAttachments) {}
+    MessageItem(qsizetype index, Type type, QString content)
+        : m_index(index), m_type(type), m_content(std::move(content))
+    {
+        Q_ASSERT(type != Type::System); // use system_tag constructor
+    }
+
+    // Construct a system message with no index, since they are never stored in the chat
+    MessageItem(system_tag_t, QString content)
+        : m_type(Type::System), m_content(std::move(content)) {}
+
+    MessageItem(qsizetype index, Type type, QString content, const QList<ResultInfo> &sources, const QList<PromptAttachment> &promptAttachments)
+        : m_index(index)
+        , m_type(type)
+        , m_content(std::move(content))
+        , m_sources(sources)
+        , m_promptAttachments(promptAttachments) {}
+
+    // index of the parent ChatItem (system, prompt, response) in its container
+    std::optional<qsizetype> index()   const { return m_index; }
 
     Type           type()    const { return m_type;    }
     const QString &content() const { return m_content; }
@@ -126,10 +143,11 @@ public:
     }
 
 private:
-    Type                    m_type;
-    QString                 m_content;
-    QList<ResultInfo>       m_sources;
-    QList<PromptAttachment> m_promptAttachments;
+    std::optional<qsizetype> m_index;
+    Type                     m_type;
+    QString                  m_content;
+    QList<ResultInfo>        m_sources;
+    QList<PromptAttachment>  m_promptAttachments;
 };
 Q_DECLARE_METATYPE(MessageItem)
 
@@ -159,8 +177,11 @@ class ChatItem : public QObject
     Q_PROPERTY(bool    thumbsUpState   MEMBER thumbsUpState  )
     Q_PROPERTY(bool    thumbsDownState MEMBER thumbsDownState)
 
+    // thinking
+    Q_PROPERTY(int     thinkingTime    MEMBER thinkingTime NOTIFY thinkingTimeChanged)
+
 public:
-    enum class Type { System, Prompt, Response, Text, ToolCall, ToolResponse };
+    enum class Type { System, Prompt, Response, Text, ToolCall, ToolResponse, Think };
 
     // tags for constructing ChatItems
     struct prompt_tag_t        { explicit prompt_tag_t       () = default; };
@@ -169,19 +190,22 @@ public:
     struct text_tag_t          { explicit text_tag_t         () = default; };
     struct tool_call_tag_t     { explicit tool_call_tag_t    () = default; };
     struct tool_response_tag_t { explicit tool_response_tag_t() = default; };
+    struct think_tag_t         { explicit think_tag_t        () = default; };
     static inline constexpr prompt_tag_t        prompt_tag        = prompt_tag_t        {};
     static inline constexpr response_tag_t      response_tag      = response_tag_t      {};
     static inline constexpr system_tag_t        system_tag        = system_tag_t        {};
     static inline constexpr text_tag_t          text_tag          = text_tag_t          {};
     static inline constexpr tool_call_tag_t     tool_call_tag     = tool_call_tag_t     {};
     static inline constexpr tool_response_tag_t tool_response_tag = tool_response_tag_t {};
+    static inline constexpr think_tag_t         think_tag         = think_tag_t         {};
 
 public:
     ChatItem(QObject *parent)
         : QObject(nullptr)
     {
         moveToThread(parent->thread());
-        setParent(parent);
+        // setParent must be called from the thread the object lives in
+        QMetaObject::invokeMethod(this, [this, parent]() { this->setParent(parent); });
     }
 
     // NOTE: System messages are currently never serialized and only *stored* by the local server.
@@ -220,6 +244,10 @@ public:
         : ChatItem(parent)
     { this->name = u"ToolResponse: "_s; this->value = value; }
 
+    ChatItem(QObject *parent, think_tag_t, const QString &value)
+        : ChatItem(parent)
+    { this->name = u"Think: "_s; this->value = value; }
+
     Type type() const
     {
         if (name == u"System: "_s)
@@ -234,6 +262,8 @@ public:
             return Type::ToolCall;
         if (name == u"ToolResponse: "_s)
             return Type::ToolResponse;
+        if (name == u"Think: "_s)
+            return Type::Think;
         throw std::invalid_argument(fmt::format("Chat item has unknown label: {:?}", name));
     }
 
@@ -254,7 +284,7 @@ public:
         if (type() == Type::Response) {
             // We parse if this contains any part of a partial toolcall
             ToolCallParser parser;
-            parser.update(value);
+            parser.update(value.toUtf8());
 
             // If no tool call is detected, return the original value
             if (parser.startIndex() < 0)
@@ -265,9 +295,11 @@ public:
             return beforeToolCall;
         }
 
-        // For tool calls we only return content if it is the code interpreter
+        if (type() == Type::Think)
+            return thinkContent(value);
+
         if (type() == Type::ToolCall)
-            return codeInterpreterContent(value);
+            return toolCallContent(value);
 
         // We don't show any of content from the tool response in the GUI
         if (type() == Type::ToolResponse)
@@ -276,10 +308,21 @@ public:
         return value;
     }
 
-    QString codeInterpreterContent(const QString &value) const
+    QString thinkContent(const QString &value) const
     {
         ToolCallParser parser;
-        parser.update(value);
+        parser.update(value.toUtf8());
+
+        // Extract the content
+        QString content = parser.toolCall();
+        content = content.trimmed();
+        return content;
+    }
+
+    QString toolCallContent(const QString &value) const
+    {
+        ToolCallParser parser;
+        parser.update(value.toUtf8());
 
         // Extract the code
         QString code = parser.toolCall();
@@ -357,6 +400,12 @@ public:
         return toolCallInfo.error != ToolEnums::Error::NoError;
     }
 
+    void setThinkingTime(int t)
+    {
+        thinkingTime = t;
+        emit thinkingTimeChanged();
+    }
+
     // NB: Assumes response is not current.
     static ChatItem *fromMessageInput(QObject *parent, const MessageInput &message)
     {
@@ -369,7 +418,7 @@ public:
         Q_UNREACHABLE();
     }
 
-    MessageItem asMessageItem() const
+    MessageItem asMessageItem(qsizetype index) const
     {
         MessageItem::Type msgType;
         switch (auto typ = type()) {
@@ -380,9 +429,10 @@ public:
             case ToolResponse: msgType = MessageItem::Type::ToolResponse; break;
             case Text:
             case ToolCall:
+            case Think:
                 throw std::invalid_argument(fmt::format("cannot convert ChatItem type {} to message item", int(typ)));
         }
-        return { msgType, flattenedContent(), sources, promptAttachments };
+        return { index, msgType, flattenedContent(), sources, promptAttachments };
     }
 
     static QList<ResultInfo> consolidateSources(const QList<ResultInfo> &sources);
@@ -391,6 +441,7 @@ public:
     void serializeToolCall(QDataStream &stream, int version);
     void serializeToolResponse(QDataStream &stream, int version);
     void serializeText(QDataStream &stream, int version);
+    void serializeThink(QDataStream &stream, int version);
     void serializeSubItems(QDataStream &stream, int version); // recursive
     void serialize(QDataStream &stream, int version);
 
@@ -399,6 +450,7 @@ public:
     bool deserializeToolCall(QDataStream &stream, int version);
     bool deserializeToolResponse(QDataStream &stream, int version);
     bool deserializeText(QDataStream &stream, int version);
+    bool deserializeThink(QDataStream &stream, int version);
     bool deserializeSubItems(QDataStream &stream, int version); // recursive
     bool deserialize(QDataStream &stream, int version);
 
@@ -406,6 +458,7 @@ Q_SIGNALS:
     void contentChanged();
     void isTooCallErrorChanged();
     void isCurrentResponseChanged();
+    void thinkingTimeChanged();
 
 public:
 
@@ -429,6 +482,9 @@ public:
     bool    stopped         = false;
     bool    thumbsUpState   = false;
     bool    thumbsDownState = false;
+
+    // thinking time in ms
+    int     thinkingTime  = 0;
 };
 
 class ChatModel : public QAbstractListModel
@@ -500,6 +556,7 @@ private:
         return std::nullopt;
     }
 
+    // FIXME(jared): this should really be done at the parent level, not the sub-item level
     static std::optional<qsizetype> getPeerInternal(const MessageItem *arr, qsizetype size, qsizetype index)
     {
         qsizetype peer;
@@ -879,6 +936,70 @@ public:
         if (changed) emit dataChanged(createIndex(index, 0), createIndex(index, 0), {NewResponseRole});
     }
 
+    Q_INVOKABLE void splitThinking(const QPair<QString, QString> &split)
+    {
+        qsizetype index;
+        {
+            QMutexLocker locker(&m_mutex);
+            if (m_chatItems.isEmpty() || m_chatItems.cend()[-1]->type() != ChatItem::Type::Response)
+                throw std::logic_error("can only set thinking on a chat that ends with a response");
+
+            index = m_chatItems.count() - 1;
+            ChatItem *currentResponse = m_chatItems.back();
+            Q_ASSERT(currentResponse->isCurrentResponse);
+
+            // Create a new response container for any text and the thinking
+            ChatItem *newResponse = new ChatItem(this, ChatItem::response_tag);
+
+            // Add preceding text if any
+            if (!split.first.isEmpty()) {
+                ChatItem *textItem = new ChatItem(this, ChatItem::text_tag, split.first);
+                newResponse->subItems.push_back(textItem);
+            }
+
+            // Add the thinking item
+            Q_ASSERT(!split.second.isEmpty());
+            ChatItem *thinkingItem = new ChatItem(this, ChatItem::think_tag, split.second);
+            thinkingItem->isCurrentResponse = true;
+            newResponse->subItems.push_back(thinkingItem);
+
+            // Add new response and reset our value
+            currentResponse->subItems.push_back(newResponse);
+            currentResponse->value = QString();
+        }
+
+        emit dataChanged(createIndex(index, 0), createIndex(index, 0), {ChildItemsRole, ContentRole});
+    }
+
+    Q_INVOKABLE void endThinking(const QPair<QString, QString> &split, int thinkingTime)
+    {
+        qsizetype index;
+        {
+            QMutexLocker locker(&m_mutex);
+            if (m_chatItems.isEmpty() || m_chatItems.cend()[-1]->type() != ChatItem::Type::Response)
+                throw std::logic_error("can only end thinking on a chat that ends with a response");
+
+            index = m_chatItems.count() - 1;
+            ChatItem *currentResponse = m_chatItems.back();
+            Q_ASSERT(currentResponse->isCurrentResponse);
+
+            ChatItem *subResponse = currentResponse->subItems.back();
+            Q_ASSERT(subResponse->type() == ChatItem::Type::Response);
+            Q_ASSERT(subResponse->isCurrentResponse);
+            subResponse->setCurrentResponse(false);
+
+            ChatItem *thinkingItem = subResponse->subItems.back();
+            Q_ASSERT(thinkingItem->type() == ChatItem::Type::Think);
+            thinkingItem->setCurrentResponse(false);
+            thinkingItem->setValue(split.first);
+            thinkingItem->setThinkingTime(thinkingTime);
+
+            currentResponse->setValue(split.second);
+        }
+
+        emit dataChanged(createIndex(index, 0), createIndex(index, 0), {ChildItemsRole, ContentRole});
+    }
+
     Q_INVOKABLE void splitToolCall(const QPair<QString, QString> &split)
     {
         qsizetype index;
@@ -1013,10 +1134,12 @@ public:
         // A flattened version of the chat item tree used by the backend and jinja
         QMutexLocker locker(&m_mutex);
         std::vector<MessageItem> chatItems;
-        for (const ChatItem *item : m_chatItems) {
-            chatItems.reserve(chatItems.size() + item->subItems.size() + 1);
-            ranges::copy(item->subItems | views::transform(&ChatItem::asMessageItem), std::back_inserter(chatItems));
-            chatItems.push_back(item->asMessageItem());
+        for (qsizetype i : views::iota(0, m_chatItems.size())) {
+            auto *parent = m_chatItems.at(i);
+            chatItems.reserve(chatItems.size() + parent->subItems.size() + 1);
+            ranges::copy(parent->subItems | views::transform([&](auto *s) { return s->asMessageItem(i); }),
+                         std::back_inserter(chatItems));
+            chatItems.push_back(parent->asMessageItem(i));
         }
         return chatItems;
     }

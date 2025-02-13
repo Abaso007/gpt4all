@@ -5,26 +5,9 @@
 // This is a list of prompt templates known to GPT4All and their associated replacements which are automatically used
 // instead when loading the chat template from GGUF. These exist for two primary reasons:
 // - HuggingFace model authors make ugly chat templates because they do not expect the end user to see them;
-// - and our Jinja2Cpp-based template parsing is not fully compatible with HuggingFace transformers and jinja2.
-
-// Below is a list of known incompatibilities with the official HF jinja2 implementation. These are not all necessarily
-// reflected in the below substitution list, and this cannot be an exhaustive list because there are a plethora of edge
-// cases in template parsing in which jinja2 and Jinja2Cpp differ. These are differences that could be reasonably
-// expected to affect chat templates that could be seen in the wild, or that cause a crash:
-// - Jinja2Cpp crashes (in debug builds) if given the template `a[""(`
-// - Jinja2Cpp does not support these jinja2 constructs:
-//   - `is not none`
-//   - list slicing, e.g. `messages[1:]`
-//   - the jinja2.ext.loopcontrols extension, which HF enables by default
-//   - a missing space after a quote in substitution (e.g. `{{ 'foo'}}`), which *has* been seen in the wild
-// - GPT4All does not currently support these HuggingFace template features:
-//   - customized "tojson" filter (we provide the built-in Jinja2Cpp one)
-//   - the AssistantTracker extension
-
+// - and chat templates occasionally use features we do not support. This is less true now that we use minja.
 
 // The substitution list.
-// For templates that apply to models listed in models3.json, these should be copied there as well for best
-// compatibility with older versions of GPT4All.
 
 const std::unordered_map<std::string_view, std::string_view> CHAT_TEMPLATE_SUBSTITUTIONS {
     // calme-2.1-phi3.5-4b.Q6_K.gguf (reported by ThilotE on Discord), Phi-3.5-mini-instruct-Q4_0.gguf (nomic-ai/gpt4all#3345)
@@ -52,6 +35,30 @@ const std::unordered_map<std::string_view, std::string_view> CHAT_TEMPLATE_SUBST
     {{- '<|assistant|>\n' }}
 {%- else %}
     {{- eos_token }}
+{%- endif %})TEMPLATE",
+    },
+    // DeepSeek-R1-Distill-Qwen-7B-Q4_0.gguf
+    {
+        // original
+        R"TEMPLATE({% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% set ns = namespace(is_first=false, is_tool=false, is_output_first=true, system_prompt='') %}{%- for message in messages %}{%- if message['role'] == 'system' %}{% set ns.system_prompt = message['content'] %}{%- endif %}{%- endfor %}{{bos_token}}{{ns.system_prompt}}{%- for message in messages %}{%- if message['role'] == 'user' %}{%- set ns.is_tool = false -%}{{'<｜User｜>' + message['content']}}{%- endif %}{%- if message['role'] == 'assistant' and message['content'] is none %}{%- set ns.is_tool = false -%}{%- for tool in message['tool_calls']%}{%- if not ns.is_first %}{{'<｜Assistant｜><｜tool▁calls▁begin｜><｜tool▁call▁begin｜>' + tool['type'] + '<｜tool▁sep｜>' + tool['function']['name'] + '\n' + '```json' + '\n' + tool['function']['arguments'] + '\n' + '```' + '<｜tool▁call▁end｜>'}}{%- set ns.is_first = true -%}{%- else %}{{'\n' + '<｜tool▁call▁begin｜>' + tool['type'] + '<｜tool▁sep｜>' + tool['function']['name'] + '\n' + '```json' + '\n' + tool['function']['arguments'] + '\n' + '```' + '<｜tool▁call▁end｜>'}}{{'<｜tool▁calls▁end｜><｜end▁of▁sentence｜>'}}{%- endif %}{%- endfor %}{%- endif %}{%- if message['role'] == 'assistant' and message['content'] is not none %}{%- if ns.is_tool %}{{'<｜tool▁outputs▁end｜>' + message['content'] + '<｜end▁of▁sentence｜>'}}{%- set ns.is_tool = false -%}{%- else %}{% set content = message['content'] %}{% if '</think>' in content %}{% set content = content.split('</think>')[-1] %}{% endif %}{{'<｜Assistant｜>' + content + '<｜end▁of▁sentence｜>'}}{%- endif %}{%- endif %}{%- if message['role'] == 'tool' %}{%- set ns.is_tool = true -%}{%- if ns.is_output_first %}{{'<｜tool▁outputs▁begin｜><｜tool▁output▁begin｜>' + message['content'] + '<｜tool▁output▁end｜>'}}{%- set ns.is_output_first = false %}{%- else %}{{'\n<｜tool▁output▁begin｜>' + message['content'] + '<｜tool▁output▁end｜>'}}{%- endif %}{%- endif %}{%- endfor -%}{% if ns.is_tool %}{{'<｜tool▁outputs▁end｜>'}}{% endif %}{% if add_generation_prompt and not ns.is_tool %}{{'<｜Assistant｜>'}}{% endif %})TEMPLATE",
+        // replacement
+        R"TEMPLATE({%- if not add_generation_prompt is defined %}
+    {%- set add_generation_prompt = false %}
+{%- endif %}
+{%- if messages[0]['role'] == 'system' %}
+    {{- messages[0]['content'] }}
+{%- endif %}
+{%- for message in messages %}
+    {%- if message['role'] == 'user' %}
+        {{- '<｜User｜>' + message['content'] }}
+    {%- endif %}
+    {%- if message['role'] == 'assistant' %}
+        {%- set content = message['content'] | regex_replace('^[\\s\\S]*</think>', '') %}
+        {{- '<｜Assistant｜>' + content + '<｜end▁of▁sentence｜>' }}
+    {%- endif %}
+{%- endfor -%}
+{%- if add_generation_prompt %}
+    {{- '<｜Assistant｜>' }}
 {%- endif %})TEMPLATE",
     },
     // gemma-2-9b-it-Q4_0.gguf (nomic-ai/gpt4all#3282)
@@ -106,10 +113,30 @@ const std::unordered_map<std::string_view, std::string_view> CHAT_TEMPLATE_SUBST
     {%- elif message['role'] == 'system' %}
         {{- '<|system|>\n' + message['content'] + eos_token }}
     {%- elif message['role'] == 'assistant' %}
-        {{- '<|assistant|>\n'  + message['content'] + eos_token }}
+        {{- '<|assistant|>\n' + message['content'] + eos_token }}
     {%- endif %}
     {%- if loop.last and add_generation_prompt %}
         {{- '<|assistant|>' }}
+    {%- endif %}
+{%- endfor %})TEMPLATE",
+    },
+    // granite-3.1-3b-a800m-instruct-Q4_0.gguf, granite-3.1-8b-instruct-Q4_0.gguf (nomic-ai/gpt4all#3471)
+    {
+        // original
+        R"TEMPLATE({%- if messages[0]['role'] == 'system' %}{%- set system_message = messages[0]['content'] %}{%- set loop_messages = messages[1:] %}{%- else %}{%- set system_message = "Knowledge Cutoff Date: April 2024. You are Granite, developed by IBM." %}{%- if tools and documents %}{%- set system_message = system_message + " You are a helpful AI assistant with access to the following tools. When a tool is required to answer the user's query, respond with <|tool_call|> followed by a JSON list of tools used. If a tool does not exist in the provided list of tools, notify the user that you do not have the ability to fulfill the request. Write the response to the user's input by strictly aligning with the facts in the provided documents. If the information needed to answer the question is not available in the documents, inform the user that the question cannot be answered based on the available data." %}{%- elif tools %}{%- set system_message = system_message + " You are a helpful AI assistant with access to the following tools. When a tool is required to answer the user's query, respond with <|tool_call|> followed by a JSON list of tools used. If a tool does not exist in the provided list of tools, notify the user that you do not have the ability to fulfill the request." %}{%- elif documents %}{%- set system_message = system_message + " Write the response to the user's input by strictly aligning with the facts in the provided documents. If the information needed to answer the question is not available in the documents, inform the user that the question cannot be answered based on the available data." %}{%- else %}{%- set system_message = system_message + " You are a helpful AI assistant." %}{%- endif %}{%- if controls and 'citations' in controls and documents %}{%- set system_message = system_message + ' In your response, use the symbols <co> and </co> to indicate when a fact comes from a document in the search result, e.g <co>0</co> for a fact from document 0. Afterwards, list all the citations with their corresponding documents in an ordered list.' %}{%- endif %}{%- if controls and 'hallucinations' in controls and documents %}{%- set system_message = system_message + ' Finally, after the response is written, include a numbered list of sentences from the response that are potentially hallucinated and not based in the documents.' %}{%- endif %}{%- set loop_messages = messages %}{%- endif %}{{- '<|start_of_role|>system<|end_of_role|>' + system_message + '<|end_of_text|> ' }}{%- if tools %}{{- '<|start_of_role|>tools<|end_of_role|>' }}{{- tools | tojson(indent=4) }}{{- '<|end_of_text|> ' }}{%- endif %}{%- if documents %}{{- '<|start_of_role|>documents<|end_of_role|>' }}{%- for document in documents %}{{- 'Document ' + loop.index0 | string + ' ' }}{{- document['text'] }}{%- if not loop.last %}{{- ' '}}{%- endif%}{%- endfor %}{{- '<|end_of_text|> ' }}{%- endif %}{%- for message in loop_messages %}{{- '<|start_of_role|>' + message['role'] + '<|end_of_role|>' + message['content'] + '<|end_of_text|> ' }}{%- if loop.last and add_generation_prompt %}{{- '<|start_of_role|>assistant' }}{%- if controls %}{{- ' ' + controls | tojson()}}{%- endif %}{{- '<|end_of_role|>' }}{%- endif %}{%- endfor %})TEMPLATE",
+        // replacement
+        R"TEMPLATE({%- if messages[0]['role'] == 'system' %}
+    {%- set system_message = messages[0]['content'] %}
+    {%- set loop_messages = messages[1:] %}
+{%- else %}
+    {%- set system_message = "Knowledge Cutoff Date: April 2024. You are Granite, developed by IBM. You are a helpful AI assistant." %}
+    {%- set loop_messages = messages %}
+{%- endif %}
+{{- '<|start_of_role|>system<|end_of_role|>' + system_message + '<|end_of_text|> ' }}
+{%- for message in loop_messages %}
+    {{- '<|start_of_role|>' + message['role'] + '<|end_of_role|>' + message['content'] + '<|end_of_text|> ' }}
+    {%- if loop.last and add_generation_prompt %}
+        {{- '<|start_of_role|>assistant<|end_of_role|>' }}
     {%- endif %}
 {%- endfor %})TEMPLATE",
     },
@@ -612,6 +639,70 @@ const std::unordered_map<std::string_view, std::string_view> CHAT_TEMPLATE_SUBST
     {{- '<|im_start|>assistant\n' }}
 {%- endif %})TEMPLATE",
     },
+    // OLMoE-1B-7B-0125-Instruct-Q4_0.gguf (nomic-ai/gpt4all#3471)
+    {
+        // original
+        R"TEMPLATE({{ bos_token }}{% for message in messages %}{% if message['role'] == 'system' %}{{ '<|system|>
+' + message['content'] + '
+' }}{% elif message['role'] == 'user' %}{{ '<|user|>
+' + message['content'] + '
+' }}{% elif message['role'] == 'assistant' %}{% if not loop.last %}{{ '<|assistant|>
+'  + message['content'] + eos_token + '
+' }}{% else %}{{ '<|assistant|>
+'  + message['content'] + eos_token }}{% endif %}{% endif %}{% if loop.last and add_generation_prompt %}{{ '<|assistant|>
+' }}{% endif %}{% endfor %})TEMPLATE",
+        // replacement
+        R"TEMPLATE({{- bos_token }}
+{%- for message in messages %}
+    {%- if message['role'] == 'system' %}
+        {{- '<|system|>\n' + message['content'] + '\n' }}
+    {%- elif message['role'] == 'user' %}
+        {{- '<|user|>\n' + message['content'] + '\n' }}
+    {%- elif message['role'] == 'assistant' %}
+        {%- if not loop.last %}
+            {{- '<|assistant|>\n' + message['content'] + eos_token + '\n' }}
+        {%- else %}
+            {{- '<|assistant|>\n' + message['content'] + eos_token }}
+        {%- endif %}
+    {%- endif %}
+    {%- if loop.last and add_generation_prompt %}
+        {{- '<|assistant|>\n' }}
+    {%- endif %}
+{%- endfor %})TEMPLATE",
+    },
+    // OLMoE-1B-7B-0924-Instruct-Q4_0.gguf (nomic-ai/gpt4all#3471)
+    {
+        // original
+        R"TEMPLATE({{ bos_token }}{% for message in messages %}
+{% if message['role'] == 'system' %}
+{{ '<|system|>
+' + message['content'] }}
+{% elif message['role'] == 'user' %}
+{{ '<|user|>
+' + message['content'] }}
+{% elif message['role'] == 'assistant' %}
+{{ '<|assistant|>
+'  + message['content'] + eos_token }}
+{% endif %}
+{% if loop.last and add_generation_prompt %}
+{{ '<|assistant|>' }}
+{% endif %}
+{% endfor %})TEMPLATE",
+        // replacement
+        R"TEMPLATE({{- bos_token }}
+{%- for message in messages %}
+    {%- if message['role'] == 'system' %}
+        {{- '<|system|>\n' + message['content'] }}
+    {%- elif message['role'] == 'user' %}
+        {{- '<|user|>\n' + message['content'] }}
+    {%- elif message['role'] == 'assistant' %}
+        {{- '<|assistant|>\n' + message['content'] + eos_token }}
+    {%- endif %}
+    {%- if loop.last and add_generation_prompt %}
+        {{- '<|assistant|>' }}
+    {%- endif %}
+{%- endfor %})TEMPLATE",
+    },
     // Phi-3.1-mini-128k-instruct-Q4_0.gguf (nomic-ai/gpt4all#3346)
     {
         // original
@@ -626,7 +717,7 @@ const std::unordered_map<std::string_view, std::string_view> CHAT_TEMPLATE_SUBST
         // replacement
         R"TEMPLATE({%- for message in messages %}
     {%- if message['role'] == 'system' %}
-        {{-'<|system|>\n' + message['content'] + '<|end|>\n'}}
+        {{- '<|system|>\n' + message['content'] + '<|end|>\n' }}
     {%- elif message['role'] == 'user' %}
         {{- '<|user|>\n' + message['content'] + '<|end|>\n' }}
     {%- elif message['role'] == 'assistant' %}
